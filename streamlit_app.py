@@ -1,16 +1,25 @@
 import streamlit as st
-from openai import OpenAI
+import requests
+import datetime
+import hashlib
+import base64
+import hmac
+import json
 import PyPDF2
 
-# 1. 页面基础配置
+# ===================== 核心配置 =====================
+# 页面基础设置
 st.set_page_config(page_title="DeepCode - PDF代码生成", page_icon="🚀")
 st.title("DeepCode - PDF代码生成")
 
-# 2. 初始化OpenAI客户端（新版SDK用法）
-client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", ""))
+# 从Streamlit Secrets读取讯飞配置
+XUNFEI_APP_ID = st.secrets.get("XUNFEI_APP_ID", "")
+XUNFEI_API_KEY = st.secrets.get("XUNFEI_API_KEY", "")
+XUNFEI_API_SECRET = st.secrets.get("XUNFEI_API_SECRET", "")
 
-# 3. PDF文本提取函数
+# ===================== 工具函数 =====================
 def extract_pdf_text(uploaded_file):
+    """提取PDF文本内容"""
     try:
         pdf_reader = PyPDF2.PdfReader(uploaded_file)
         text = ""
@@ -22,43 +31,113 @@ def extract_pdf_text(uploaded_file):
     except Exception as e:
         return "", f"PDF解析失败：{str(e)}"
 
-# 4. 调用OpenAI API生成代码（新版SDK用法）
-def generate_code_from_pdf(pdf_text):
-    if not client.api_key:
-        return "", "❌ 请配置OpenAI API密钥（在Streamlit Secrets中设置OPENAI_API_KEY）"
+def get_ws_auth_url():
+    """生成讯飞API的鉴权URL（修复401核心）"""
+    if not all([XUNFEI_APP_ID, XUNFEI_API_KEY, XUNFEI_API_SECRET]):
+        return "", "❌ 讯飞配置不完整，请检查Secrets中的APP_ID/API_KEY/API_SECRET"
     
-    prompt = f"""
-    请基于以下PDF内容，生成对应的可运行代码：
-    PDF内容：
-    {pdf_text[:2000]}
+    # 1. 生成时间戳
+    now = datetime.datetime.now(datetime.timezone.utc)
+    date = now.strftime("%a, %d %b %Y %H:%M:%S GMT")
     
-    要求：
-    1. 代码语法正确，可直接运行
-    2. 给出详细的注释说明
-    3. 说明代码的功能和使用方法
-    """
+    # 2. 构造签名原始串
+    signature_origin = f"host: spark-api.xf-yun.com\ndate: {date}\nGET /v1.1/chat HTTP/1.1"
     
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=2048
-        )
-        return response.choices[0].message.content, None
-    except Exception as e:
-        return "", f"API调用失败：{str(e)}"
+    # 3. HMAC-SHA256签名
+    signature_sha = hmac.new(XUNFEI_API_SECRET.encode('utf-8'), 
+                             signature_origin.encode('utf-8'), 
+                             digestmod=hashlib.sha256).digest()
+    signature_b64 = base64.b64encode(signature_sha).decode('utf-8')
+    
+    # 4. 构造Authorization
+    authorization_origin = f'api_key="{XUNFEI_API_KEY}", algorithm="hmac-sha256", headers="host date request-line", signature="{signature_b64}"'
+    authorization_b64 = base64.b64encode(authorization_origin.encode('utf-8')).decode('utf-8')
+    
+    # 5. 拼接最终URL
+    url = f"wss://spark-api.xf-yun.com/v1.1/chat?authorization={authorization_b64}&date={date}&host=spark-api.xf-yun.com"
+    return url, None
 
-# 5. 核心交互组件
+def call_xunfei_api(pdf_text):
+    """调用讯飞星火API生成代码"""
+    # 1. 获取鉴权URL
+    auth_url, auth_error = get_ws_auth_url()
+    if auth_error:
+        return "", auth_error
+    
+    # 2. 构造请求数据
+    messages = [
+        {
+            "role": "user",
+            "content": f"""基于以下PDF内容生成可运行的代码：
+            {pdf_text[:2000]}
+            要求：
+            1. 代码语法正确，可直接运行
+            2. 附带详细注释
+            3. 说明代码功能和使用方法
+            """
+        }
+    ]
+    
+    data = {
+        "header": {
+            "app_id": XUNFEI_APP_ID,
+            "uid": "deepcode_user"
+        },
+        "parameter": {
+            "chat": {
+                "domain": "general",
+                "temperature": 0.7,
+                "max_tokens": 2048
+            }
+        },
+        "payload": {
+            "message": {
+                "text": messages
+            }
+        }
+    }
+    
+    # 3. 发送请求（使用HTTP接口兼容WS，降低复杂度）
+    try:
+        # 改用HTTP接口（比WebSocket更稳定，适合新手）
+        response = requests.post(
+            url="https://spark-api.xf-yun.com/v1.1/chat",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": auth_url.split("?")[1].split("&")[0].split("=")[1],
+                "Date": auth_url.split("&")[1].split("=")[1],
+                "Host": "spark-api.xf-yun.com"
+            },
+            json=data,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("header", {}).get("code") == 0:
+                code_content = result["payload"]["choices"]["text"][0]["content"]
+                return code_content, None
+            else:
+                return "", f"讯飞API返回错误：{result.get('header', {}).get('message', '未知错误')}"
+        else:
+            return "", f"API请求失败，状态码：{response.status_code}，响应：{response.text}"
+    except Exception as e:
+        return "", f"API调用异常：{str(e)}"
+
+# ===================== 页面交互 =====================
+# 1. 文件上传
 uploaded_file = st.file_uploader("📤 上传PDF文件", type="pdf")
+
+# 2. 生成按钮
 generate_btn = st.button("🚀 生成代码", type="primary")
 
-# 6. 按钮点击逻辑
+# 3. 按钮点击逻辑
 if generate_btn:
     if not uploaded_file:
         st.warning("⚠️ 请先上传PDF文件！")
     else:
         with st.spinner("🔍 正在解析PDF并生成代码..."):
+            # 提取PDF文本
             pdf_text, pdf_error = extract_pdf_text(uploaded_file)
             if pdf_error:
                 st.error(pdf_error)
@@ -66,7 +145,8 @@ if generate_btn:
                 if not pdf_text:
                     st.warning("⚠️ PDF中未提取到文本内容！")
                 else:
-                    code_result, api_error = generate_code_from_pdf(pdf_text)
+                    # 调用讯飞API
+                    code_result, api_error = call_xunfei_api(pdf_text)
                     if api_error:
                         st.error(api_error)
                     else:

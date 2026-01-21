@@ -9,7 +9,7 @@ import requests
 
 # 替换原来的.env读取代码，用Streamlit secrets获取配置
 import streamlit as st
-
+st.title("DeepCode - PDF代码生成")
 XUNFEI_APP_ID = st.secrets["XUNFEI_APP_ID"]
 XUNFEI_API_KEY = st.secrets["XUNFEI_API_KEY"]
 XUNFEI_API_SECRET = st.secrets["XUNFEI_API_SECRET"]
@@ -83,4 +83,5 @@ def call_xunfei(prompt):
     except Exception as e:
 
         return "", f"请求异常：{str(e)}"
+
 

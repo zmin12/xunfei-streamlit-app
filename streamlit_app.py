@@ -1,39 +1,31 @@
-# streamlit_app.py 顶部的导入区
-import os
+import streamlit as st
 import datetime
 import hashlib
 import base64
 import hmac
 import requests
 
-
-# 替换原来的.env读取代码，用Streamlit secrets获取配置
-import streamlit as st
+# 1. 页面基础标题
 st.title("DeepCode - PDF代码生成")
-XUNFEI_APP_ID = st.secrets["XUNFEI_APP_ID"]
-XUNFEI_API_KEY = st.secrets["XUNFEI_API_KEY"]
-XUNFEI_API_SECRET = st.secrets["XUNFEI_API_SECRET"]
 
-# ===================== 完整的call_xunfei函数 =====================
+# 2. 从Streamlit Secrets读取讯飞配置
+XUNFEI_APP_ID = st.secrets.get("XUNFEI_APP_ID", "")
+XUNFEI_API_KEY = st.secrets.get("XUNFEI_API_KEY", "")
+XUNFEI_API_SECRET = st.secrets.get("XUNFEI_API_SECRET", "")
+
+# 3. 讯飞API调用函数
 def call_xunfei(prompt):
-    """
-    调用讯飞Spark Pro API（严格按官方鉴权规范）
-    参数: prompt - 发给大模型的提示词
-    返回: (生成内容, 错误信息)
-    """
-    # 1. 固定配置（Spark Pro官方地址，一字不能改）
+    if not all([XUNFEI_APP_ID, XUNFEI_API_KEY, XUNFEI_API_SECRET]):
+        return "", "❌ 讯飞配置不完整，请检查Secrets配置"
+    
     host = "spark-api-open.xf-yun.com"
     path = "/v1/chat/completions"
     url = f"https://{host}{path}"
 
-    # 2. 生成UTC时间（讯飞强制要求，格式不能错）
+    # 生成UTC时间和签名
     now = datetime.datetime.now(datetime.timezone.utc)
-    date = now.strftime("%a, %d %b %Y %H:%M:%S GMT")  # 必须是GMT格式
-
-    # 3. 构造签名原始串（官方强制格式，顺序/换行/空格都不能改）
+    date = now.strftime("%a, %d %b %Y %H:%M:%S GMT")
     signature_origin = f"host: {host}\ndate: {date}\nPOST {path} HTTP/1.1"
-    
-    # 4. 计算HMAC-SHA256签名（编码必须是utf-8，不能省略）
     signature_sha = hmac.new(
         XUNFEI_API_SECRET.encode('utf-8'),
         signature_origin.encode('utf-8'),
@@ -41,16 +33,15 @@ def call_xunfei(prompt):
     ).digest()
     signature = base64.b64encode(signature_sha).decode('utf-8')
 
-    # 5. 构造Authorization头（headers参数必须包含host，顺序不能改）
+    # 构造Authorization头
     auth_str = (
         f'api_key="{XUNFEI_API_KEY}", '
         f'algorithm="hmac-sha256", '
-        f'headers="host date request-line", '  # 必须包含host，和签名串对应
+        f'headers="host date request-line", '
         f'signature="{signature}"'
     )
     authorization = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
 
-    # 6. 请求头（Host必须和签名中的host完全一致）
     headers = {
         "Content-Type": "application/json",
         "Host": host,
@@ -58,7 +49,6 @@ def call_xunfei(prompt):
         "Authorization": authorization
     }
 
-    # 7. 请求体（Spark Pro格式，model必须是spark-pro）
     payload = {
         "app_id": XUNFEI_APP_ID,
         "model": "spark-pro",
@@ -67,7 +57,6 @@ def call_xunfei(prompt):
         "max_tokens": 2048
     }
 
-    # 8. 发送请求（捕获所有可能的错误）
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
@@ -77,11 +66,26 @@ def call_xunfei(prompt):
             return result["choices"][0]["message"]["content"], None
         else:
             return "", f"API返回错误：{result.get('message', '未知错误')}"
-    
-    except requests.exceptions.HTTPError as e:
-        return "", f"401鉴权失败？核对配置！错误详情：{e.response.status_code} - {e.response.text}"
     except Exception as e:
-
         return "", f"请求异常：{str(e)}"
 
+# 4. 核心交互组件（文件上传+生成按钮）
+uploaded_file = st.file_uploader("📤 上传PDF文件", type="pdf")
+generate_btn = st.button("🚀 生成代码", type="primary")
 
+# 5. 按钮点击逻辑
+if generate_btn:
+    if not uploaded_file:
+        st.warning("请先上传PDF文件！")
+    else:
+        # 读取PDF文件（简单处理，若需完整解析可补充PyPDF2依赖）
+        st.info("正在读取PDF文件并调用讯飞API...")
+        # 这里简化处理，实际可补充PDF文本提取逻辑
+        prompt = f"基于以下PDF文件内容生成相关代码：{uploaded_file.name}"
+        code_result, error = call_xunfei(prompt)
+        
+        if error:
+            st.error(error)
+        else:
+            st.success("代码生成成功！")
+            st.code(code_result, language="python")

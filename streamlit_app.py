@@ -7,11 +7,12 @@ import hmac
 import requests
 
 
-# 加载.env配置文件（必须！确保配置读取正确）
+# 替换原来的.env读取代码，用Streamlit secrets获取配置
+import streamlit as st
 
-XUNFEI_APP_ID = os.getenv("XUNFEI_APP_ID")
-XUNFEI_API_KEY = os.getenv("XUNFEI_API_KEY")
-XUNFEI_API_SECRET = os.getenv("XUNFEI_API_SECRET")
+XUNFEI_APP_ID = st.secrets["XUNFEI_APP_ID"]
+XUNFEI_API_KEY = st.secrets["XUNFEI_API_KEY"]
+XUNFEI_API_SECRET = st.secrets["XUNFEI_API_SECRET"]
 
 # ===================== 完整的call_xunfei函数 =====================
 def call_xunfei(prompt):
@@ -82,3 +83,4 @@ def call_xunfei(prompt):
     except Exception as e:
 
         return "", f"请求异常：{str(e)}"
+

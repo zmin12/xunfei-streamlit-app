@@ -1,15 +1,41 @@
 import streamlit as st
-import requests
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 import PyPDF2
-import json
+import torch
 
 # ===================== 页面基础配置 =====================
 st.set_page_config(page_title="DeepCode - PDF代码生成", page_icon="🚀")
 st.title("DeepCode - PDF代码生成")
 
+# ===================== 加载本地模型（首次运行自动下载） =====================
+@st.cache_resource
+def load_model():
+    try:
+        # 使用轻量级开源模型（适合Streamlit Cloud资源）
+        model_name = "distilgpt2"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        
+        # 添加pad token（distilgpt2默认没有）
+        tokenizer.pad_token = tokenizer.eos_token
+        
+        # 初始化文本生成pipeline
+        generator = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            device_map="auto",  # 自动使用GPU（如果可用）
+            max_new_tokens=1024,
+            temperature=0.7,
+            do_sample=True
+        )
+        return generator, None
+    except Exception as e:
+        return None, f"模型加载失败：{str(e)}"
+
 # ===================== 核心函数 =====================
 def extract_pdf_text(uploaded_file):
-    """提取上传PDF文件的文本内容"""
+    """提取PDF文本内容"""
     try:
         pdf_reader = PyPDF2.PdfReader(uploaded_file)
         text = ""
@@ -21,87 +47,68 @@ def extract_pdf_text(uploaded_file):
     except Exception as e:
         return "", f"PDF解析失败：{str(e)}"
 
-def generate_code_from_pdf(pdf_text):
-    """调用Hugging Face开源大模型生成代码（使用最新接口）"""
-    hf_token = st.secrets.get("HUGGING_FACE_TOKEN", "")
-    if not hf_token:
-        return "", "❌ 请在Streamlit Secrets中配置HUGGING_FACE_TOKEN！"
+def generate_code_from_pdf(pdf_text, generator):
+    """使用本地模型生成代码"""
+    if not generator:
+        return "", "❌ 模型加载失败，请刷新页面重试！"
     
+    if not pdf_text:
+        return "", "⚠️ PDF中未提取到文本内容！"
+    
+    # 构造提示词
     prompt = f"""
-    请基于以下PDF内容，生成对应的可运行Python代码：
-    PDF内容：
-    {pdf_text[:2000]}
+    基于以下PDF内容生成可运行的Python代码：
+    {pdf_text[:1000]}  # 限制长度适配模型
     
-    生成要求：
-    1. 代码语法完全正确，可直接复制运行
-    2. 为关键逻辑添加详细注释
-    3. 说明代码的功能和使用方法
-    """.encode('utf-8').decode('utf-8')
+    要求：
+    1. 代码语法正确
+    2. 带详细注释
+    3. 说明功能
+    """
     
     try:
-        request_data = {
-            "inputs": prompt,
-            "parameters": {
-                "temperature": 0.7,
-                "max_new_tokens": 2048,
-                "do_sample": True,
-                "return_full_text": False
-            },
-            "model": "Qwen/Qwen-2-7B-Instruct"
-        }
-        
-        # 使用最新的router.huggingface.co接口
-        response = requests.post(
-            url="https://router.huggingface.co/",
-            headers={
-                "Authorization": f"Bearer {hf_token}",
-                "Content-Type": "application/json; charset=utf-8",
-                "Accept": "application/json; charset=utf-8"
-            },
-            data=json.dumps(request_data, ensure_ascii=False).encode('utf-8'),
-            timeout=60
+        # 生成代码
+        result = generator(
+            prompt,
+            max_new_tokens=1024,
+            temperature=0.7,
+            top_p=0.95,
+            repetition_penalty=1.1
         )
         
-        response.encoding = 'utf-8'
-        if response.status_code == 200:
-            result = response.json()
-            if "generated_text" in result:
-                code_content = result["generated_text"].encode('utf-8').decode('utf-8')
-                if "```python" in code_content:
-                    code_content = code_content.split("```python")[1].split("```")[0]
-                return code_content, None
-            else:
-                return "", f"模型返回格式异常：{str(result)}"
-        elif response.status_code == 401:
-            return "", "❌ Token无效或权限不足，请检查Token！"
-        elif response.status_code == 503:
-            return "", "⚠️ 模型暂时不可用，请1分钟后重试！"
-        else:
-            return "", f"调用失败：状态码{response.status_code}，响应：{response.text}"
-    except requests.exceptions.Timeout:
-        return "", "❌ 请求超时，免费模型响应较慢，请重试！"
+        # 提取生成的代码
+        code_content = result[0]["generated_text"].split(prompt)[-1]
+        if "```python" in code_content:
+            code_content = code_content.split("```python")[1].split("```")[0]
+        return code_content, None
     except Exception as e:
-        return "", f"调用异常：{str(e)}"
+        return "", f"生成异常：{str(e)}"
 
 # ===================== 页面交互 =====================
-uploaded_file = st.file_uploader("📤 上传PDF文件", type="pdf")
-generate_btn = st.button("🚀 生成代码", type="primary")
+# 1. 加载模型
+generator, load_error = load_model()
+if load_error:
+    st.error(load_error)
 
-if generate_btn:
+# 2. 文件上传
+uploaded_file = st.file_uploader("📤 上传PDF文件", type="pdf")
+
+# 3. 生成按钮
+generate_btn = st.button("🚀 生成代码", type="primary", disabled=not generator)
+
+# 4. 按钮逻辑
+if generate_btn and generator:
     if not uploaded_file:
         st.warning("⚠️ 请先上传PDF文件！")
     else:
-        with st.spinner("🔍 正在解析PDF并生成代码...（免费模型响应较慢，请稍等）"):
+        with st.spinner("🔍 正在解析PDF并生成代码...（首次运行稍慢）"):
             pdf_text, pdf_error = extract_pdf_text(uploaded_file)
             if pdf_error:
                 st.error(pdf_error)
             else:
-                if not pdf_text:
-                    st.warning("⚠️ PDF中未提取到文本内容！")
+                code_result, gen_error = generate_code_from_pdf(pdf_text, generator)
+                if gen_error:
+                    st.error(gen_error)
                 else:
-                    code_result, api_error = generate_code_from_pdf(pdf_text)
-                    if api_error:
-                        st.error(api_error)
-                    else:
-                        st.success("✅ 代码生成成功！")
-                        st.code(code_result, language="python")
+                    st.success("✅ 代码生成成功！")
+                    st.code(code_result, language="python")

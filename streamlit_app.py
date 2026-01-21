@@ -5,10 +5,10 @@ import hashlib
 import base64
 import hmac
 import requests
-from dotenv import load_dotenv  # 若没装则执行 pip install python-dotenv
+
 
 # 加载.env配置文件（必须！确保配置读取正确）
-load_dotenv()
+
 XUNFEI_APP_ID = os.getenv("XUNFEI_APP_ID")
 XUNFEI_API_KEY = os.getenv("XUNFEI_API_KEY")
 XUNFEI_API_SECRET = os.getenv("XUNFEI_API_SECRET")
@@ -80,4 +80,5 @@ def call_xunfei(prompt):
     except requests.exceptions.HTTPError as e:
         return "", f"401鉴权失败？核对配置！错误详情：{e.response.status_code} - {e.response.text}"
     except Exception as e:
+
         return "", f"请求异常：{str(e)}"

@@ -23,7 +23,7 @@ def extract_pdf_text(uploaded_file):
 def generate_code_from_pdf(pdf_text, hf_token):
     """调用Hugging Face开源大模型生成代码"""
     # 校验Token
-    if not hf_token or hf_token == "你的Hugging Face Token":
+    if not hf_token or hf_token == " ":
         return "", "❌ 请先替换代码中的Hugging Face Token！"
     
     # 构造生成代码的提示词
@@ -81,7 +81,7 @@ def generate_code_from_pdf(pdf_text, hf_token):
 
 # ===================== 页面交互 =====================
 # 1. 替换这里的Token！！！
-YOUR_HF_TOKEN = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # 把这里替换成你的Token
+YOUR_HF_TOKEN = st.secrets.get("HUGGING_FACE_TOKEN", "")
 
 # 2. 文件上传组件
 uploaded_file = st.file_uploader("📤 上传PDF文件", type="pdf")
@@ -110,3 +110,4 @@ if generate_btn:
                     else:
                         st.success("✅ 代码生成成功！")
                         st.code(code_result, language="python")
+
